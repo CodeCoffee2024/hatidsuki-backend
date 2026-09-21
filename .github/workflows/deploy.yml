@@ -1,0 +1,35 @@
+name: deploy
+
+# Deploys the API to Railway when main changes. Needs one repository secret:
+#   RAILWAY_TOKEN  a project token from Railway (Project settings > Tokens)
+# Until it is set, the tests still run and the deploy step is skipped.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  railway:
+    needs: test
+    runs-on: ubuntu-latest
+    container: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Railway
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        run: railway up --service hatidsuki-backend --detach
+
+      - name: Skipped
+        if: ${{ env.RAILWAY_TOKEN == '' }}
+        run: echo "RAILWAY_TOKEN is not set, so nothing was deployed."

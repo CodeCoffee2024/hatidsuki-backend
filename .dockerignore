@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/node_modules/
+.git/
+.github/
+.run/
+tests/
+docs/
+.env
+.env.*
+*.md
