@@ -1,0 +1,12 @@
+# build output
+bin/
+obj/
+TestResults/
+
+# local files
+.run/
+.env
+.env.*
+*.user
+.vs/
+.idea/
