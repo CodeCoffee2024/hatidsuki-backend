@@ -5,20 +5,22 @@ namespace HatidSuki.Infrastructure.Persistence;
 /// <summary>
 /// Works out the PostgreSQL connection string. Local development sets ConnectionStrings:Default. Hosting platforms such as
 /// Railway instead provide a single DATABASE_URL like postgresql://user:password@host:5432/dbname, which Npgsql can't read
-/// directly, so it is converted here.
+/// directly, so it is converted here. "HatidSuki" is accepted as an alias for "Default" (some Railway setups name the
+/// connection string after the project instead).
 /// </summary>
 public static class DatabaseConnection
 {
     public static string Resolve(IConfiguration config)
     {
-        var explicitString = config.GetConnectionString("Default");
+        var explicitString = config.GetConnectionString("Default") ?? config.GetConnectionString("HatidSuki");
         if (!string.IsNullOrWhiteSpace(explicitString)) return explicitString;
 
         var url = config["DATABASE_URL"];
         if (!string.IsNullOrWhiteSpace(url)) return FromUrl(url);
 
         throw new InvalidOperationException(
-            "No database configured. Set ConnectionStrings__Default, or DATABASE_URL (postgresql://user:password@host:port/database).");
+            "No database configured. Set ConnectionStrings__Default (or ConnectionStrings__HatidSuki), or DATABASE_URL " +
+            "(postgresql://user:password@host:port/database).");
     }
 
     public static string FromUrl(string url)

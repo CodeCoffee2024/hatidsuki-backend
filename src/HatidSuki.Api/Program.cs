@@ -46,6 +46,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 });
 builder.Services.AddAuthorization();
 
+// ---- CORS: only needed when the browser calls this API directly (a different origin than the web app). Not needed
+// when the web app proxies /api/* to here server-side (same-origin from the browser's point of view). ----
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+builder.Services.AddCors(o => o.AddPolicy("app", p =>
+{
+    if (corsOrigins.Length > 0) p.WithOrigins(corsOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
+}));
+
 // ---- abuse protection for anonymous endpoints (customers scanning a QR, login attempts) ----
 builder.Services.AddRateLimiter(o =>
 {
@@ -81,6 +89,7 @@ app.Use(async (ctx, next) =>
     ctx.Response.Headers["X-Frame-Options"] = "DENY";
     await next();
 });
+app.UseCors("app");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

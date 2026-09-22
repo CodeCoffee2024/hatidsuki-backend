@@ -53,3 +53,13 @@ If you connect a repository to Railway or Vercel with their own GitHub integrati
 - Migrations run when the API starts. That is fine for one instance. Run them as a separate step before scaling out.
 - Set up database backups before real orders arrive. Check which options your Railway plan includes, or run `pg_dump` against `DATABASE_URL` on a schedule.
 - Changing `Jwt__Key` signs everyone out.
+- `ConnectionStrings__HatidSuki` and `App__FrontendBaseUrl` are accepted as aliases for `ConnectionStrings__Default` and `App__PublicBaseUrl` (some deploys were set up with those names).
+- Demo seeding (`Seed__Demo`) is refused in Production unless `Seed__AllowInProduction=true` is also set — intentional, since the first person to register becomes the real owner.
+
+## Optional: calling the API cross-origin instead of proxying
+
+If the web app calls the Railway domain directly (not through the Vercel rewrite above), set `Cors__AllowedOrigins__0`, `__1`, … to the web app's origin(s). The API then sends real `Access-Control-Allow-Origin` headers and switches the refresh-token cookie to `SameSite=None` (only takes effect over HTTPS). Leave `Cors__AllowedOrigins` unset if you're using the same-origin proxy — it's the simpler default and needs nothing here.
+
+## Optional: transactional email (Resend)
+
+Set `Resend__ApiKey` and `Resend__FromAddress` (a verified sending address/domain in your Resend account) to turn on the order-confirmation email sent when a customer gives an email address. Without an API key, the API just logs instead of sending — nothing breaks, no emails go out. This is a lean slice of FS-020: there's no "ready" email yet, no retry queue, and no per-workspace template editor.

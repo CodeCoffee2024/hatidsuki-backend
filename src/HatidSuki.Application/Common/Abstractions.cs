@@ -66,6 +66,18 @@ public class AppOptions
     public string PublicBaseUrl { get; set; } = "http://localhost:4200";
 }
 
+public class CorsOptions
+{
+    /// <summary>Origins allowed to call the API directly. Not needed when the web app proxies /api/* same-origin.</summary>
+    public string[] AllowedOrigins { get; set; } = [];
+}
+
+/// <summary>Sends transactional email (order confirmations). A no-op implementation is used until a provider is configured.</summary>
+public interface IEmailSender
+{
+    Task SendAsync(string toEmail, string subject, string textBody, CancellationToken ct);
+}
+
 // ---- errors mapped to HTTP status codes by the API ---------------------------------------------
 
 public class NotFoundException(string message = "We couldn't find that.") : Exception(message);

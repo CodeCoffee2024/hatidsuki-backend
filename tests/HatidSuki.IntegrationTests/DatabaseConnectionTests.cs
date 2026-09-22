@@ -35,6 +35,15 @@ public class DatabaseConnectionTests
     }
 
     [Fact]
+    public void Accepts_HatidSuki_as_an_alias_for_the_Default_connection_string()
+    {
+        // Some deploys were set up with ConnectionStrings__HatidSuki instead of ConnectionStrings__Default.
+        var cs = DatabaseConnection.Resolve(Config(("ConnectionStrings:HatidSuki", "Host=aliased")));
+
+        cs.Should().Be("Host=aliased");
+    }
+
+    [Fact]
     public void Falls_back_to_database_url()
     {
         DatabaseConnection.Resolve(Config(("DATABASE_URL", "postgresql://a:b@host/d"))).Should().Contain("Host=host");

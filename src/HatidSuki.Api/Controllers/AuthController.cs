@@ -52,6 +52,10 @@ public class AuthController(IMediator mediator, IConfiguration config) : Control
 
     private CookieOptions CookieOptions(DateTimeOffset expires) => new()
     {
-        HttpOnly = true, Secure = Request.IsHttps, SameSite = SameSiteMode.Lax, Path = "/api/auth", Expires = expires
+        HttpOnly = true, Secure = Request.IsHttps,
+        // Cross-origin (a CORS setup, not the same-origin proxy) needs SameSite=None, which browsers only honor
+        // alongside Secure. Plain HTTP (local dev) falls back to Lax so the cookie still gets set at all.
+        SameSite = Request.IsHttps ? SameSiteMode.None : SameSiteMode.Lax,
+        Path = "/api/auth", Expires = expires
     };
 }
