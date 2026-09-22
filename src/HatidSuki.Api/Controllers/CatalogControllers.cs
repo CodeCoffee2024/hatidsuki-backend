@@ -10,6 +10,7 @@ namespace HatidSuki.Api.Controllers;
 public record SaveItemRequest(string Name, decimal Price, string? Category, string? Description, string? Unit);
 public record AvailabilityRequest(bool Available);
 public record ArchivedRequest(bool Archived);
+public record SaveOptionGroupsRequest(List<OptionGroupInput> Groups);
 
 [ApiController, Route("api/items"), Authorize]
 public class ItemsController(IMediator mediator) : ControllerBase
@@ -38,6 +39,21 @@ public class ItemsController(IMediator mediator) : ControllerBase
     [HttpPut("{id:guid}/archived"), Authorize(Roles = "Owner,Manager")]
     public Task<ItemDto> Archive(Guid id, ArchivedRequest r, CancellationToken ct) =>
         mediator.Send(new SetItemArchivedCommand(id, r.Archived), ct);
+
+    // ---- option groups: sizes, flavors, add-ons (FS-008) ----
+
+    [HttpPut("{id:guid}/options"), Authorize(Roles = "Owner,Manager")]
+    public Task<ItemDto> SaveOptions(Guid id, SaveOptionGroupsRequest r, CancellationToken ct) =>
+        mediator.Send(new SaveItemOptionGroupsCommand(id, r.Groups), ct);
+
+    // Staff may 86 a single option (e.g. "no more large cups") during service.
+    [HttpPut("{id:guid}/options/{groupId:guid}/{optionId:guid}/availability")]
+    public Task<ItemDto> SetOptionAvailability(Guid id, Guid groupId, Guid optionId, AvailabilityRequest r, CancellationToken ct) =>
+        mediator.Send(new SetItemOptionAvailabilityCommand(id, groupId, optionId, r.Available), ct);
+
+    [HttpPost("{id:guid}/options/copy-from/{sourceId:guid}"), Authorize(Roles = "Owner,Manager")]
+    public Task<ItemDto> CopyOptions(Guid id, Guid sourceId, CancellationToken ct) =>
+        mediator.Send(new CopyOptionGroupsCommand(id, sourceId), ct);
 }
 
 public record CreateFormRequest(string Name);

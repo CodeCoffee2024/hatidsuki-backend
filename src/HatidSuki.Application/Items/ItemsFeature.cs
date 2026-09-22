@@ -3,18 +3,31 @@ using System.Text.RegularExpressions;
 using FluentValidation;
 using HatidSuki.Application.Common;
 using HatidSuki.Domain;
+using HatidSuki.Domain.Items;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
 namespace HatidSuki.Application.Items;
 
+public record OptionDto(Guid Id, string Name, decimal PriceDelta, bool IsAvailable, bool IsDefault, int SortOrder);
+public record OptionGroupDto(Guid Id, string Name, string SelectionType, bool Required, int? MinSelect, int? MaxSelect,
+    int SortOrder, List<OptionDto> Options);
+
 public record ItemDto(Guid Id, string Name, string? Description, decimal Price, string? Category, string Unit,
-    bool IsAvailable, bool IsArchived, int SortOrder);
+    bool IsAvailable, bool IsArchived, int SortOrder, List<OptionGroupDto> OptionGroups, decimal DefaultPrice);
 
 internal static class ItemMapper
 {
-    public static ItemDto ToDto(Item i) =>
-        new(i.Id, i.Name, i.Description, i.Price, i.Category, i.Unit, i.IsAvailable, i.IsArchived, i.SortOrder);
+    public static ItemDto ToDto(Item i)
+    {
+        var groups = i.OptionGroups;
+        var groupDtos = groups.OrderBy(g => g.SortOrder)
+            .Select(g => new OptionGroupDto(g.Id, g.Name, g.SelectionType, g.Required, g.MinSelect, g.MaxSelect, g.SortOrder,
+                g.Options.OrderBy(o => o.SortOrder).Select(o => new OptionDto(o.Id, o.Name, o.PriceDelta, o.IsAvailable, o.IsDefault, o.SortOrder)).ToList()))
+            .ToList();
+        return new(i.Id, i.Name, i.Description, i.Price, i.Category, i.Unit, i.IsAvailable, i.IsArchived, i.SortOrder,
+            groupDtos, PriceCalculator.DefaultPrice(i.Price, groups));
+    }
 }
 
 // ---- list --------------------------------------------------------------------------------------
@@ -99,6 +112,84 @@ public class SetItemArchivedHandler(IAppDbContext db) : IRequestHandler<SetItemA
     {
         var item = await db.Items.FirstOrDefaultAsync(i => i.Id == r.Id, ct) ?? throw new NotFoundException();
         item.SetArchived(r.Archived); // items are archived, never deleted, because past orders reference them
+        await db.SaveChangesAsync(ct);
+        return ItemMapper.ToDto(item);
+    }
+}
+
+// ---- option groups (sizes, flavors, add-ons — FS-008) -------------------------------------------
+
+public record OptionInput(Guid? Id, string Name, decimal PriceDelta, bool IsAvailable, bool IsDefault);
+public record OptionGroupInput(Guid? Id, string Name, string SelectionType, bool Required, int? MinSelect, int? MaxSelect, List<OptionInput> Options);
+
+/// <summary>The editor always saves its whole "Options" section at once, so groups/options are simply replaced.</summary>
+public record SaveItemOptionGroupsCommand(Guid ItemId, List<OptionGroupInput> Groups) : IRequest<ItemDto>;
+
+public class SaveItemOptionGroupsValidator : AbstractValidator<SaveItemOptionGroupsCommand>
+{
+    public SaveItemOptionGroupsValidator()
+    {
+        RuleFor(x => x.Groups.Count).LessThanOrEqualTo(ItemOptionGroupValidator.MaxGroups)
+            .WithMessage($"An item can have at most {ItemOptionGroupValidator.MaxGroups} option groups.");
+        RuleForEach(x => x.Groups).ChildRules(g =>
+        {
+            g.RuleFor(x => x.Name).NotEmpty().MaximumLength(60).WithMessage("Every option group needs a name (up to 60 characters).");
+            g.RuleFor(x => x.Options.Count).LessThanOrEqualTo(ItemOptionGroupValidator.MaxOptionsPerGroup)
+                .WithMessage($"A group can have at most {ItemOptionGroupValidator.MaxOptionsPerGroup} options.");
+            g.RuleForEach(x => x.Options).ChildRules(o =>
+            {
+                o.RuleFor(x => x.Name).NotEmpty().MaximumLength(60).WithMessage("Every option needs a name (up to 60 characters).");
+                o.RuleFor(x => x.PriceDelta).InclusiveBetween(-999_999, 999_999);
+            });
+        });
+    }
+}
+
+public class SaveItemOptionGroupsHandler(IAppDbContext db) : IRequestHandler<SaveItemOptionGroupsCommand, ItemDto>
+{
+    public async Task<ItemDto> Handle(SaveItemOptionGroupsCommand r, CancellationToken ct)
+    {
+        var item = await db.Items.FirstOrDefaultAsync(i => i.Id == r.ItemId, ct) ?? throw new NotFoundException("That item no longer exists.");
+        var groups = r.Groups.Select((g, gi) => new ItemOptionGroup
+        {
+            Id = g.Id ?? Guid.NewGuid(), Name = g.Name, SelectionType = g.SelectionType, Required = g.Required,
+            MinSelect = g.MinSelect, MaxSelect = g.MaxSelect, SortOrder = gi,
+            Options = g.Options.Select((o, oi) => new ItemOption
+            {
+                Id = o.Id ?? Guid.NewGuid(), Name = o.Name, PriceDelta = o.PriceDelta, IsAvailable = o.IsAvailable,
+                IsDefault = o.IsDefault, SortOrder = oi
+            }).ToList()
+        }).ToList();
+        item.SetOptionGroups(groups);
+        await db.SaveChangesAsync(ct);
+        return ItemMapper.ToDto(item);
+    }
+}
+
+/// <summary>Quick "86 the large size" toggle, without resending the whole options editor.</summary>
+public record SetItemOptionAvailabilityCommand(Guid ItemId, Guid GroupId, Guid OptionId, bool Available) : IRequest<ItemDto>;
+
+public class SetItemOptionAvailabilityHandler(IAppDbContext db) : IRequestHandler<SetItemOptionAvailabilityCommand, ItemDto>
+{
+    public async Task<ItemDto> Handle(SetItemOptionAvailabilityCommand r, CancellationToken ct)
+    {
+        var item = await db.Items.FirstOrDefaultAsync(i => i.Id == r.ItemId, ct) ?? throw new NotFoundException("That item no longer exists.");
+        item.SetOptionAvailability(r.GroupId, r.OptionId, r.Available);
+        await db.SaveChangesAsync(ct);
+        return ItemMapper.ToDto(item);
+    }
+}
+
+/// <summary>"Copy options from…" — duplicates another item's option groups onto this one.</summary>
+public record CopyOptionGroupsCommand(Guid ItemId, Guid FromItemId) : IRequest<ItemDto>;
+
+public class CopyOptionGroupsHandler(IAppDbContext db) : IRequestHandler<CopyOptionGroupsCommand, ItemDto>
+{
+    public async Task<ItemDto> Handle(CopyOptionGroupsCommand r, CancellationToken ct)
+    {
+        var item = await db.Items.FirstOrDefaultAsync(i => i.Id == r.ItemId, ct) ?? throw new NotFoundException("That item no longer exists.");
+        var source = await db.Items.AsNoTracking().FirstOrDefaultAsync(i => i.Id == r.FromItemId, ct) ?? throw new NotFoundException("That item no longer exists.");
+        item.CopyOptionGroupsFrom(source);
         await db.SaveChangesAsync(ct);
         return ItemMapper.ToDto(item);
     }

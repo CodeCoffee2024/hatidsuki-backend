@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using HatidSuki.Domain.Items;
 
 namespace HatidSuki.Domain.Orders;
 
-public record LineDraft(Guid ItemId, string ItemName, decimal UnitPrice, int Quantity, string? Note);
+public record LineDraft(Guid ItemId, string ItemName, decimal UnitPrice, int Quantity, string? Note,
+    IReadOnlyList<SelectedOptionSnapshot>? Options = null);
 public record PartDraft(string PersonLabel, string? Note, IReadOnlyList<LineDraft> Lines);
 
 public class OrderLine : Entity
@@ -15,12 +17,19 @@ public class OrderLine : Entity
     public decimal UnitPrice { get; private set; }
     public int Quantity { get; private set; }
     public string? Note { get; private set; }
+    /// <summary>The chosen options (name + price delta), snapshotted the same way the item name and price are (FS-008).</summary>
+    public string OptionsJson { get; private set; } = "[]";
+    public List<SelectedOptionSnapshot> Options => ItemOptionsJson.DeserializeSelected(OptionsJson);
     public decimal LineTotal => UnitPrice * Quantity;
 
     internal static OrderLine From(LineDraft d)
     {
         if (d.Quantity is < 1 or > 99) throw new DomainException("Quantity must be between 1 and 99.");
-        return new OrderLine { ItemId = d.ItemId, ItemName = d.ItemName, UnitPrice = d.UnitPrice, Quantity = d.Quantity, Note = d.Note };
+        return new OrderLine
+        {
+            ItemId = d.ItemId, ItemName = d.ItemName, UnitPrice = d.UnitPrice, Quantity = d.Quantity, Note = d.Note,
+            OptionsJson = ItemOptionsJson.SerializeSelected((d.Options ?? []).ToList())
+        };
     }
 }
 

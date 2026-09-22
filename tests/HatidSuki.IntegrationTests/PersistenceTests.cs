@@ -1,6 +1,7 @@
 using FluentAssertions;
 using HatidSuki.Application.Common;
 using HatidSuki.Domain;
+using HatidSuki.Domain.Items;
 using HatidSuki.Domain.Orders;
 using HatidSuki.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -95,6 +96,50 @@ public class PersistenceTests
         var saved = await Full(check).SingleAsync(x => x.Id == id);
         saved.PaymentStatus.Should().Be(PaymentStatus.Paid, "the only remaining person paid");
         saved.Total.Should().Be(8m);
+    }
+
+    // ---- item options & variants: order lines snapshot the choice, not a live link (FS-008) --------
+
+    [Fact]
+    public async Task An_order_lines_selected_options_survive_later_catalog_edits()
+    {
+        var store = Guid.NewGuid().ToString(); var ws = Guid.NewGuid(); Guid itemId; Guid orderId;
+        await using (var db = Db(store, ws))
+        {
+            var coffee = Item.Create(ws, "Coffee", 80m, null, null, null, 1, Now);
+            var size = new ItemOptionGroup { Name = "Size", Required = true, Options = [new() { Name = "Large", PriceDelta = 20m }] };
+            coffee.SetOptionGroups([size]);
+            db.Items.Add(coffee);
+            await db.SaveChangesAsync();
+            itemId = coffee.Id;
+
+            var (unitPrice, selected) = coffee.PriceFor(new Dictionary<Guid, List<Guid>> { [size.Id] = [size.Options[0].Id] });
+            var order = Order.Place(ws, Guid.NewGuid(), Guid.NewGuid(), 1, "USD", OrderChannel.Public, null, "Ana", null, null, "{}",
+                null, null, false, null, [new PartDraft("Ana", null, [new LineDraft(itemId, "Coffee", unitPrice, 1, null, selected)])], Now, "customer");
+            db.Orders.Add(order);
+            await db.SaveChangesAsync();
+            orderId = order.Id;
+        }
+
+        // The business renames the option and changes its price after the order was placed.
+        await using (var db = Db(store, ws))
+        {
+            var item = await db.Items.SingleAsync(i => i.Id == itemId);
+            var edited = item.OptionGroups;
+            edited[0].Name = "Cup size";
+            edited[0].Options[0].Name = "Extra large";
+            edited[0].Options[0].PriceDelta = 999m;
+            item.SetOptionGroups(edited);
+            await db.SaveChangesAsync();
+        }
+
+        await using var check = Db(store, ws);
+        var saved = await Full(check).SingleAsync(o => o.Id == orderId);
+        var line = saved.Parts.Single().Lines.Single();
+        line.UnitPrice.Should().Be(100m); // 80 base + 20 delta, frozen at the time of the order
+        line.Options.Single().GroupName.Should().Be("Size");
+        line.Options.Single().OptionName.Should().Be("Large");
+        line.Options.Single().PriceDelta.Should().Be(20m);
     }
 
     // ---- tenant isolation: one business must never see another's data ------------------------------

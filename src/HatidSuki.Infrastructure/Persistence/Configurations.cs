@@ -54,6 +54,8 @@ public class ItemConfiguration : IEntityTypeConfiguration<Item>
         b.Property(x => x.Category).HasMaxLength(60);
         b.Property(x => x.Unit).HasMaxLength(20);
         b.Property(x => x.Price).HasPrecision(18, 2);
+        b.Property(x => x.OptionsJson).HasColumnType("jsonb");
+        b.Ignore(x => x.OptionGroups);
         b.HasIndex(x => new { x.WorkspaceId, x.Category, x.SortOrder });
     }
 }
@@ -169,6 +171,8 @@ public class OrderLineConfiguration : IEntityTypeConfiguration<OrderLine>
         b.Property(x => x.ItemName).HasMaxLength(120);
         b.Property(x => x.Note).HasMaxLength(200);
         b.Property(x => x.UnitPrice).HasPrecision(18, 2);
+        b.Property(x => x.OptionsJson).HasColumnType("jsonb");
+        b.Ignore(x => x.Options);
     }
 }
 

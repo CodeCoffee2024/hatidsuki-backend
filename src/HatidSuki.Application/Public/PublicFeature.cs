@@ -1,15 +1,20 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HatidSuki.Application.Common;
+using HatidSuki.Application.Items;
 using HatidSuki.Domain;
 using HatidSuki.Domain.Forms;
+using HatidSuki.Domain.Items;
 using HatidSuki.Domain.Orders;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace HatidSuki.Application.Public;
 
-public record PublicItemDto(Guid Id, string Name, string? Description, decimal Price, string? Category, string Unit, bool IsAvailable);
+public record PublicItemDto(Guid Id, string Name, string? Description, decimal Price, string? Category, string Unit,
+    bool IsAvailable, List<OptionGroupDto> OptionGroups);
 
 public record PublicLocationDto(Guid Id, string Name, string? Note);
 
@@ -29,7 +34,8 @@ public static class ItemResolver
             : db.Items.AsNoTracking().Where(i => !i.IsArchived);
         if (settings.Source == "selected") query = query.Where(i => settings.ItemIds.Contains(i.Id));
         var items = await query.OrderBy(i => i.Category).ThenBy(i => i.SortOrder).ThenBy(i => i.Name).ToListAsync(ct);
-        return items.Select(i => new PublicItemDto(i.Id, i.Name, i.Description, i.Price, i.Category, i.Unit, i.IsAvailable)).ToList();
+        return items.Select(i => new PublicItemDto(i.Id, i.Name, i.Description, i.Price, i.Category, i.Unit, i.IsAvailable,
+            ItemMapper.ToDto(i).OptionGroups)).ToList();
     }
 }
 
@@ -78,11 +84,19 @@ public class GetPublicFormHandler(IAppDbContext db) : IRequestHandler<GetPublicF
 
 // ---- building people (parts) from a request ----------------------------------------------------
 
-public record LineInput(Guid ItemId, int Quantity, string? Note);
+/// <summary>Options is the group id → chosen option ids for that group, for items that have option groups (FS-008).</summary>
+public record LineInput(Guid ItemId, int Quantity, string? Note, Dictionary<Guid, List<Guid>>? Options = null);
 public record PartInput(string? Person, string? Note, List<LineInput>? Lines);
 
 internal static class PartBuilder
 {
+    /// <summary>A stable key so two lines choosing the exact same options for the same item are one line, not two.</summary>
+    private static string OptionsKey(Dictionary<Guid, List<Guid>>? options) =>
+        options is null || options.Count == 0
+            ? ""
+            : string.Join("|", options.OrderBy(kv => kv.Key)
+                .Select(kv => $"{kv.Key}:{string.Join(",", kv.Value.Distinct().OrderBy(x => x))}"));
+
     public static async Task<(List<PartDraft> Parts, List<(string Key, string Message)> Problems)> BuildAsync(
         IAppDbContext db, Guid workspaceId, OrderItemsSettings? settings, List<PartInput>? inputs, string fallbackLabel, CancellationToken ct)
     {
@@ -114,17 +128,23 @@ internal static class PartBuilder
             if (label.Length == 0) label = fallbackLabel;
 
             var lines = new List<LineDraft>();
-            var merged = (input.Lines ?? []).Where(l => l.Quantity > 0).GroupBy(l => l.ItemId);
+            var merged = (input.Lines ?? []).Where(l => l.Quantity > 0).GroupBy(l => (l.ItemId, Options: OptionsKey(l.Options)));
             foreach (var g in merged)
             {
+                var (itemId, _) = g.Key;
                 var qty = g.Sum(l => l.Quantity);
-                if (!items.TryGetValue(g.Key, out var item)) { problems.Add(($"parts[{pi}]", "One of the items doesn't exist any more. Please reload the page.")); continue; }
+                if (!items.TryGetValue(itemId, out var item)) { problems.Add(($"parts[{pi}]", "One of the items doesn't exist any more. Please reload the page.")); continue; }
                 if (settings.Source == "selected" && !settings.ItemIds.Contains(item.Id)) { problems.Add(($"parts[{pi}]", $"'{item.Name}' isn't on this menu.")); continue; }
                 if (!item.IsOrderable) { problems.Add(($"parts[{pi}]", $"'{item.Name}' is sold out.")); continue; }
                 if (qty > 99) { problems.Add(($"parts[{pi}]", $"You can order up to 99 of '{item.Name}' per person.")); continue; }
+
+                decimal unitPrice; List<SelectedOptionSnapshot> selected;
+                try { (unitPrice, selected) = item.PriceFor(g.First().Options ?? []); }
+                catch (DomainException ex) { problems.Add(($"parts[{pi}]", $"'{item.Name}': {ex.Message}")); continue; }
+
                 totalQty += qty;
                 var note = settings.AllowLineNotes ? g.Select(l => l.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))?.Trim() : null;
-                lines.Add(new LineDraft(item.Id, item.Name, item.Price, qty, note is { Length: > 200 } ? note[..200] : note));
+                lines.Add(new LineDraft(item.Id, item.Name, unitPrice, qty, note is { Length: > 200 } ? note[..200] : note, selected));
             }
             if (lines.Count == 0) problems.Add(($"parts[{pi}]", inputs.Count > 1 ? $"Add at least one item for {label}." : "Add at least one item to your order."));
             var partNote = input.Note?.Trim();
@@ -205,7 +225,8 @@ public record PlaceOrderCommand(string FormCode, string? SourceCode, string? Ide
 public record PlacedOrderDto(Guid OrderId, int Number, decimal Total, string Currency, string TrackingToken,
     string? ThankYou, string? PaymentMessage, int People, string? DeliveryTo = null);
 
-public class PlaceOrderHandler(IAppDbContext db, ICurrentUser current, IClock clock) : IRequestHandler<PlaceOrderCommand, PlacedOrderDto>
+public class PlaceOrderHandler(IAppDbContext db, ICurrentUser current, IClock clock, IEmailSender email,
+    IOptions<AppOptions> appOptions, ILogger<PlaceOrderHandler> logger) : IRequestHandler<PlaceOrderCommand, PlacedOrderDto>
 {
     public async Task<PlacedOrderDto> Handle(PlaceOrderCommand r, CancellationToken ct)
     {
@@ -278,8 +299,27 @@ public class PlaceOrderHandler(IAppDbContext db, ICurrentUser current, IClock cl
 
         db.Orders.Add(order);
         await db.SaveChangesAsync(ct);
+        await SendConfirmationEmailAsync(order, workspace.Name, def.PaymentMessage, ct);
         return new PlacedOrderDto(order.Id, order.Number, order.Total, order.Currency, order.TrackingToken,
             def.ThankYou, def.PaymentMessage, order.Parts.Count, order.DeliveryLocationName);
+    }
+
+    /// <summary>Best-effort: a mail provider outage must never fail order placement (FS-020 AC3/AC7).</summary>
+    private async Task SendConfirmationEmailAsync(Order order, string businessName, string? paymentMessage, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(order.CustomerEmail)) return;
+        var trackingLink = $"{appOptions.Value.PublicBaseUrl.TrimEnd('/')}/t/{order.TrackingToken}";
+        var body = $"""
+            Hi {order.CustomerName},
+
+            Thanks — order #{order.Number} from {businessName} has been received.
+
+            Total: {order.Total:0.00} {order.Currency}
+            {(paymentMessage is null ? "" : paymentMessage + "\n")}
+            Track your order: {trackingLink}
+            """;
+        try { await email.SendAsync(order.CustomerEmail, $"Order #{order.Number} received — {businessName}", body, ct); }
+        catch (Exception ex) { logger.LogWarning(ex, "Order confirmation email failed for order {OrderId}.", order.Id); }
     }
 
     private async Task<PlacedOrderDto> ToPlacedAsync(Order o, Form form, CancellationToken ct)

@@ -18,7 +18,8 @@ public static class Alerting
     public const int StaleAfterMinutes = 5;
 }
 
-public record LineDto(string ItemName, int Quantity, decimal UnitPrice, decimal LineTotal, string? Note);
+public record SelectedOptionDto(string GroupName, string OptionName, decimal PriceDelta);
+public record LineDto(string ItemName, int Quantity, decimal UnitPrice, decimal LineTotal, string? Note, List<SelectedOptionDto> Options);
 
 public record PartDto(Guid Id, string Person, string? Note, bool IsReady, bool IsPaid, string? PaidBy, bool IsCancelled,
     string? CancelReason, bool IsLateAddition, decimal Subtotal, List<LineDto> Lines);
@@ -39,7 +40,8 @@ public static class OrderMapper
         var unacknowledged = o.IsOpen && o.AcknowledgedAtUtc is null;
         var parts = o.Parts.OrderBy(p => p.SortOrder).Select(p => new PartDto(p.Id, p.PersonLabel, p.Note, p.IsReady, p.IsPaid,
             p.PaidBy, p.IsCancelled, p.CancelReason, p.IsLateAddition, p.Subtotal,
-            p.Lines.Select(l => new LineDto(l.ItemName, l.Quantity, l.UnitPrice, l.LineTotal, l.Note)).ToList())).ToList();
+            p.Lines.Select(l => new LineDto(l.ItemName, l.Quantity, l.UnitPrice, l.LineTotal, l.Note,
+                l.Options.Select(x => new SelectedOptionDto(x.GroupName, x.OptionName, x.PriceDelta)).ToList())).ToList())).ToList();
 
         List<AnswerDto>? answers = null;
         if (detail)
