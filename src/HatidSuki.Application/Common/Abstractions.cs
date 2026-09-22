@@ -42,6 +42,9 @@ public interface IClock { DateTime UtcNow { get; } }
 public interface ITokenService
 {
     string CreateAccessToken(User user, Workspace workspace);
+    /// <summary>A platform-admin token: no workspace_id claim at all, so it can never satisfy RequireWorkspaceId()
+    /// and so can never reach a tenant-scoped endpoint, by construction rather than by convention.</summary>
+    string CreatePlatformAdminToken();
     /// <summary>A new random refresh token (the raw value goes to the client, only its hash is stored).</summary>
     string CreateRefreshToken();
     string HashToken(string token);
@@ -76,6 +79,14 @@ public class CorsOptions
 public interface IEmailSender
 {
     Task SendAsync(string toEmail, string subject, string textBody, CancellationToken ct);
+}
+
+/// <summary>The single platform-operator login. Deliberately not a database row: this is one person's own credential,
+/// rotated by changing an environment variable, never a self-service account.</summary>
+public class PlatformAdminOptions
+{
+    public string Email { get; set; } = "";
+    public string Password { get; set; } = "";
 }
 
 // ---- errors mapped to HTTP status codes by the API ---------------------------------------------

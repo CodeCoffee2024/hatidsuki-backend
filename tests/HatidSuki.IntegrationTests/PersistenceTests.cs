@@ -1,6 +1,7 @@
 using FluentAssertions;
 using HatidSuki.Application.Common;
 using HatidSuki.Domain;
+using HatidSuki.Domain.Identity;
 using HatidSuki.Domain.Items;
 using HatidSuki.Domain.Orders;
 using HatidSuki.Infrastructure.Persistence;
@@ -140,6 +141,47 @@ public class PersistenceTests
         line.Options.Single().GroupName.Should().Be("Size");
         line.Options.Single().OptionName.Should().Be("Large");
         line.Options.Single().PriceDelta.Should().Be(20m);
+    }
+
+    // ---- platform admin: suspending a workspace persists and can be reversed ------------------------
+
+    [Fact]
+    public async Task Suspending_a_workspace_persists_and_reactivating_clears_it()
+    {
+        var store = Guid.NewGuid().ToString(); Guid wsId;
+        await using (var db = Db(store, null))
+        {
+            var ws = Workspace.Create("Ana's Bakery", "anas-bakery-" + store[..8], "USD", "UTC", Now);
+            db.Workspaces.Add(ws);
+            await db.SaveChangesAsync();
+            wsId = ws.Id;
+        }
+
+        await using (var db = Db(store, null))
+        {
+            var ws = await db.Workspaces.SingleAsync(w => w.Id == wsId);
+            ws.Suspend("unpaid invoice", Now);
+            await db.SaveChangesAsync();
+        }
+
+        await using (var check = Db(store, null))
+        {
+            var ws = await check.Workspaces.SingleAsync(w => w.Id == wsId);
+            ws.IsSuspended.Should().BeTrue();
+            ws.SuspendedReason.Should().Be("unpaid invoice");
+        }
+
+        await using (var db = Db(store, null))
+        {
+            var ws = await db.Workspaces.SingleAsync(w => w.Id == wsId);
+            ws.Reactivate();
+            await db.SaveChangesAsync();
+        }
+
+        await using var final = Db(store, null);
+        var reactivated = await final.Workspaces.SingleAsync(w => w.Id == wsId);
+        reactivated.IsSuspended.Should().BeFalse();
+        reactivated.SuspendedReason.Should().BeNull();
     }
 
     // ---- tenant isolation: one business must never see another's data ------------------------------

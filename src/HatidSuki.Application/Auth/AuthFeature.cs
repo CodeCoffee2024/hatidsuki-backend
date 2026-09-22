@@ -95,6 +95,7 @@ public class LoginHandler(IAppDbContext db, IPasswordService passwords, ITokenSe
         }
         user.RegisterSuccessfulLogin();
         var workspace = await db.Workspaces.FirstAsync(w => w.Id == user.WorkspaceId, ct);
+        if (workspace.IsSuspended) throw new UnauthorizedException("This account is suspended. Contact support.");
         return await AuthHelpers.IssueAsync(db, tokens, clock, user, workspace, ct);
     }
 }
@@ -113,8 +114,9 @@ public class RefreshHandler(IAppDbContext db, ITokenService tokens, IClock clock
 
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == stored.UserId && u.IsActive, ct)
                    ?? throw new UnauthorizedException();
-        stored.Revoke(now); // rotation: every refresh token is single-use
         var workspace = await db.Workspaces.FirstAsync(w => w.Id == user.WorkspaceId, ct);
+        if (workspace.IsSuspended) throw new UnauthorizedException("This account is suspended. Contact support.");
+        stored.Revoke(now); // rotation: every refresh token is single-use
         return await AuthHelpers.IssueAsync(db, tokens, clock, user, workspace, ct);
     }
 }

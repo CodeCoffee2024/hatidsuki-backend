@@ -31,6 +31,7 @@ public static class DependencyInjection
         });
         services.Configure<CorsOptions>(config.GetSection("Cors"));
         services.Configure<ResendOptions>(config.GetSection("Resend"));
+        services.Configure<PlatformAdminOptions>(config.GetSection("PlatformAdmin"));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<ITokenService, TokenService>();
         services.AddSingleton<IPasswordService, PasswordService>();

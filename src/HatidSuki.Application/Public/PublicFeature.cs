@@ -69,7 +69,8 @@ public class GetPublicFormHandler(IAppDbContext db) : IRequestHandler<GetPublicF
             }
         }
 
-        if (form.Status == FormStatus.Closed)
+        // A platform-suspended business reads exactly like a paused form: no internal detail leaks to customers.
+        if (form.Status == FormStatus.Closed || workspace.IsSuspended)
             return new PublicFormDto(form.ShortCode, workspace.Name, workspace.Currency, form.Name, "closed",
                 def.ClosedMessage ?? "We're not taking orders right now. Please check back soon.", null, [], version.Number, sourceName, []);
 
@@ -252,6 +253,7 @@ public class PlaceOrderHandler(IAppDbContext db, ICurrentUser current, IClock cl
         }
 
         var workspace = await db.Workspaces.AsNoTracking().FirstAsync(w => w.Id == form.WorkspaceId, ct);
+        if (workspace.IsSuspended) throw new ConflictException("We're not taking orders right now.");
         var version = await db.FormVersions.IgnoreQueryFilters().AsNoTracking()
             .FirstAsync(v => v.FormId == form.Id && v.Number == form.PublishedVersion, ct);
         var def = FormDefinition.FromJson(version.DefinitionJson);

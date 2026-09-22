@@ -48,6 +48,15 @@ public class TokenService(IOptions<JwtOptions> options) : ITokenService
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
+    public string CreatePlatformAdminToken()
+    {
+        var claims = new[] { new Claim("sub", "platform-admin"), new Claim("role", "PlatformAdmin"), new Claim("name", "Platform admin") };
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_o.Key));
+        var token = new JwtSecurityToken(_o.Issuer, _o.Audience, claims,
+            expires: DateTime.UtcNow.AddMinutes(60), signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
     public string CreateRefreshToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 
     public string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));

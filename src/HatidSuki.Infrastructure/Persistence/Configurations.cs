@@ -17,6 +17,7 @@ public class WorkspaceConfiguration : IEntityTypeConfiguration<Workspace>
         b.Property(x => x.Currency).HasMaxLength(3);
         b.Property(x => x.Timezone).HasMaxLength(64);
         b.Property(x => x.PhoneCountryCode).HasMaxLength(4);
+        b.Property(x => x.SuspendedReason).HasMaxLength(300);
         b.HasIndex(x => x.Slug).IsUnique();
     }
 }

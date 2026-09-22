@@ -20,6 +20,11 @@ public class Workspace : Entity
     public int NextOrderNumber { get; private set; } = 1;
     public DateTime CreatedAtUtc { get; private set; }
 
+    /// <summary>Set by a platform admin, not by the business itself. A suspended workspace can't sign in or take orders.</summary>
+    public bool IsSuspended { get; private set; }
+    public DateTime? SuspendedAtUtc { get; private set; }
+    public string? SuspendedReason { get; private set; }
+
     public static bool IsValidSlug(string slug) => SlugPattern.IsMatch(slug) && !Reserved.Contains(slug);
 
     public static Workspace Create(string name, string slug, string currency, string timezone, DateTime now)
@@ -36,5 +41,19 @@ public class Workspace : Entity
     {
         Name = name.Trim(); Currency = currency.ToUpperInvariant(); Timezone = timezone;
         PhoneCountryCode = new string(phoneCountryCode.Where(char.IsDigit).ToArray());
+    }
+
+    public void Suspend(string? reason, DateTime now)
+    {
+        IsSuspended = true;
+        SuspendedAtUtc = now;
+        SuspendedReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim()[..Math.Min(reason.Trim().Length, 300)];
+    }
+
+    public void Reactivate()
+    {
+        IsSuspended = false;
+        SuspendedAtUtc = null;
+        SuspendedReason = null;
     }
 }
