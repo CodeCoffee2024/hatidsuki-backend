@@ -60,6 +60,11 @@ public class DatabaseInitializer(IServiceProvider services, IConfiguration confi
             await db.Database.MigrateAsync(ct);
         }
 
+        // Never logs the actual credential — just whether the platform-admin login is even reachable, so a
+        // misconfigured deploy (typo'd variable name, never actually redeployed) is obvious from the logs alone.
+        var platformAdminConfigured = !string.IsNullOrWhiteSpace(config["PlatformAdmin:Email"]) && !string.IsNullOrWhiteSpace(config["PlatformAdmin:Password"]);
+        log.LogInformation("Platform admin login is {Status}.", platformAdminConfigured ? "configured" : "NOT configured (PlatformAdmin__Email / PlatformAdmin__Password not set)");
+
         // Demo data is deliberately kept out of production (the first registration becomes the real owner) unless
         // Seed:AllowInProduction explicitly overrides that safety, in addition to Seed:Demo turning seeding on at all.
         var wantsSeed = config.GetValue<bool>("Seed:Demo");

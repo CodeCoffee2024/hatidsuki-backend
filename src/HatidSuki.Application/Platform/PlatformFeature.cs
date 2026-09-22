@@ -27,10 +27,13 @@ public class PlatformLoginHandler(IOptions<PlatformAdminOptions> options, IToken
 {
     public Task<string> Handle(PlatformLoginCommand r, CancellationToken ct)
     {
-        var o = options.Value;
+        // Trimmed on both sides: environment-variable UIs (and copy/paste) routinely add invisible leading/trailing
+        // whitespace, which would otherwise turn a correct password into a silent, confusing "wrong password".
+        var configuredEmail = options.Value.Email.Trim();
+        var configuredPassword = options.Value.Password.Trim();
+        var emailOk = !string.IsNullOrEmpty(configuredEmail) && FixedTimeEquals(configuredEmail, r.Email.Trim());
+        var passwordOk = !string.IsNullOrEmpty(configuredPassword) && FixedTimeEquals(configuredPassword, r.Password.Trim());
         // Fails closed: with no PlatformAdmin:Email/Password configured, this can never succeed, by design.
-        var emailOk = !string.IsNullOrEmpty(o.Email) && FixedTimeEquals(o.Email, r.Email);
-        var passwordOk = !string.IsNullOrEmpty(o.Password) && FixedTimeEquals(o.Password, r.Password);
         if (!emailOk || !passwordOk) throw new UnauthorizedException("Wrong email or password.");
         return Task.FromResult(tokens.CreatePlatformAdminToken());
     }
