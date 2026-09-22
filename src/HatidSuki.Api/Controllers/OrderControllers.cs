@@ -55,6 +55,15 @@ public class OrdersController(IMediator mediator) : ControllerBase
     [HttpGet("{id:guid}")]
     public Task<OrderDto> Get(Guid id, CancellationToken ct) => mediator.Send(new GetOrderQuery(id), ct);
 
+    /// <summary>The exact list currently filtered, as a spreadsheet. Owner/Manager only.</summary>
+    [HttpGet("export.csv"), Authorize(Roles = "Owner,Manager")]
+    public async Task<IActionResult> ExportCsv([FromQuery] string? status, [FromQuery] string? payment, [FromQuery] string? search,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
+    {
+        var file = await mediator.Send(new ExportOrdersCsvQuery(status, payment, search, from, to), ct);
+        return File(file.Bytes, "text/csv", file.FileName);
+    }
+
     /// <summary>Published forms staff can use to enter a phone or walk-in order.</summary>
     [HttpGet("entry-forms")]
     public Task<List<EntryFormDto>> EntryForms(CancellationToken ct) => mediator.Send(new ListEntryFormsQuery(), ct);

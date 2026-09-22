@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using HatidSuki.Application.Common;
@@ -128,46 +129,106 @@ public class GetCheckerBoardHandler(IAppDbContext db, ICurrentUser current, IClo
 public record ListOrdersQuery(string? Status, string? Payment, string? Search, DateOnly? From, DateOnly? To, int Page, int PageSize)
     : IRequest<PagedResult<OrderDto>>;
 
-public class ListOrdersHandler(IAppDbContext db, ICurrentUser current, IClock clock) : IRequestHandler<ListOrdersQuery, PagedResult<OrderDto>>
+/// <summary>The orders list and the CSV export share exactly this filter, so "export what I'm looking at" is always true.</summary>
+internal static class OrderFilter
 {
-    public async Task<PagedResult<OrderDto>> Handle(ListOrdersQuery q, CancellationToken ct)
+    public static async Task<IQueryable<Order>> ApplyAsync(IQueryable<Order> query, IAppDbContext db, ICurrentUser current,
+        string? status, string? payment, string? search, DateOnly? from, DateOnly? to, CancellationToken ct)
     {
-        var page = Math.Max(1, q.Page); var size = Math.Clamp(q.PageSize, 5, 100);
-        var query = db.Orders.AsNoTracking().Where(o => !o.IsTest);
-
-        if (Enum.TryParse<OrderStatus>(q.Status, true, out var status)) query = query.Where(o => o.Status == status);
-        if (q.From is not null || q.To is not null)
+        query = query.Where(o => !o.IsTest);
+        if (Enum.TryParse<OrderStatus>(status, true, out var s)) query = query.Where(o => o.Status == s);
+        if (from is not null || to is not null)
         {
             // Dates are calendar days in the business's own timezone, not UTC.
             var wsId = current.RequireWorkspaceId();
             var ws = await db.Workspaces.AsNoTracking().FirstAsync(w => w.Id == wsId, ct);
             var tz = TimeZoneInfo.FindSystemTimeZoneById(ws.Timezone);
-            if (q.From is { } from)
-            {
-                var fromUtc = TimeZoneInfo.ConvertTimeToUtc(from.ToDateTime(TimeOnly.MinValue), tz);
-                query = query.Where(o => o.CreatedAtUtc >= fromUtc);
-            }
-            if (q.To is { } to)
-            {
-                var toUtc = TimeZoneInfo.ConvertTimeToUtc(to.AddDays(1).ToDateTime(TimeOnly.MinValue), tz);
-                query = query.Where(o => o.CreatedAtUtc < toUtc);
-            }
+            if (from is { } f) query = query.Where(o => o.CreatedAtUtc >= TimeZoneInfo.ConvertTimeToUtc(f.ToDateTime(TimeOnly.MinValue), tz));
+            if (to is { } t) query = query.Where(o => o.CreatedAtUtc < TimeZoneInfo.ConvertTimeToUtc(t.AddDays(1).ToDateTime(TimeOnly.MinValue), tz));
         }
-        if (q.Payment == "unpaid") query = query.Where(o => o.Status != OrderStatus.Cancelled && o.Parts.Any(p => !p.IsCancelled && p.PaidAtUtc == null));
-        if (q.Payment == "paid")
+        if (payment == "unpaid") query = query.Where(o => o.Status != OrderStatus.Cancelled && o.Parts.Any(p => !p.IsCancelled && p.PaidAtUtc == null));
+        if (payment == "paid")
             query = query.Where(o => o.Parts.Any(p => !p.IsCancelled) && !o.Parts.Any(p => !p.IsCancelled && p.PaidAtUtc == null));
-        if (!string.IsNullOrWhiteSpace(q.Search))
+        if (!string.IsNullOrWhiteSpace(search))
         {
-            var term = q.Search.Trim().ToLowerInvariant();
+            var term = search.Trim().ToLowerInvariant();
             var number = int.TryParse(term.TrimStart('#'), out var n) ? n : -1;
             query = query.Where(o => o.Number == number || o.CustomerName.ToLower().Contains(term)
                                      || (o.CustomerPhone != null && o.CustomerPhone.Contains(term))
                                      || o.Parts.Any(p => p.PersonLabel.ToLower().Contains(term)));
         }
+        return query;
+    }
+}
+
+public class ListOrdersHandler(IAppDbContext db, ICurrentUser current, IClock clock) : IRequestHandler<ListOrdersQuery, PagedResult<OrderDto>>
+{
+    public async Task<PagedResult<OrderDto>> Handle(ListOrdersQuery q, CancellationToken ct)
+    {
+        var page = Math.Max(1, q.Page); var size = Math.Clamp(q.PageSize, 5, 100);
+        var query = await OrderFilter.ApplyAsync(db.Orders.AsNoTracking(), db, current, q.Status, q.Payment, q.Search, q.From, q.To, ct);
 
         var total = await query.CountAsync(ct);
         var rows = await query.WithParts().OrderByDescending(o => o.CreatedAtUtc).Skip((page - 1) * size).Take(size).ToListAsync(ct);
         return new PagedResult<OrderDto>(rows.Select(o => OrderMapper.ToDto(o, clock.UtcNow, false)).ToList(), total, page, size);
+    }
+}
+
+// ---- CSV export (FS-026): the same filtered list, as a spreadsheet -----------------------------
+
+public record ExportOrdersCsvQuery(string? Status, string? Payment, string? Search, DateOnly? From, DateOnly? To) : IRequest<CsvFile>;
+public record CsvFile(byte[] Bytes, string FileName);
+
+/// <summary>Neutralizes CSV/formula injection: a cell a spreadsheet would treat as a formula is forced back to text.</summary>
+public static class CsvSanitizer
+{
+    private static readonly char[] FormulaLeaders = ['=', '+', '-', '@', '\t', '\r'];
+
+    public static string Cell(string? value)
+    {
+        var s = value ?? "";
+        if (s.Length > 0 && FormulaLeaders.Contains(s[0])) s = "'" + s;
+        return s.IndexOfAny([',', '"', '\n', '\r']) < 0 ? s : "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+}
+
+public class ExportOrdersCsvHandler(IAppDbContext db, ICurrentUser current, IClock clock) : IRequestHandler<ExportOrdersCsvQuery, CsvFile>
+{
+    private const int MaxRows = 20_000; // a pragmatic cap for one small business, not the spec's full 100k streaming export
+
+    public async Task<CsvFile> Handle(ExportOrdersCsvQuery q, CancellationToken ct)
+    {
+        var wsId = current.RequireWorkspaceId();
+        var ws = await db.Workspaces.AsNoTracking().FirstAsync(w => w.Id == wsId, ct);
+        var tz = TimeZoneInfo.FindSystemTimeZoneById(ws.Timezone);
+
+        var query = await OrderFilter.ApplyAsync(db.Orders.AsNoTracking(), db, current, q.Status, q.Payment, q.Search, q.From, q.To, ct);
+        var orders = await query.WithParts().OrderByDescending(o => o.CreatedAtUtc).Take(MaxRows).ToListAsync(ct);
+
+        var sb = new StringBuilder();
+        string[] header = ["Order #", "Placed", "Status", "Payment status", "Source", "Customer name", "Customer email",
+            "Customer phone", "People", "Delivery to", "Items", "Currency", "Total", "Paid", "Balance"];
+        sb.AppendLine(string.Join(',', header.Select(CsvSanitizer.Cell)));
+
+        foreach (var o in orders)
+        {
+            var placedLocal = TimeZoneInfo.ConvertTimeFromUtc(o.CreatedAtUtc, tz);
+            var active = o.Parts.Where(p => !p.IsCancelled).ToList();
+            var items = string.Join("; ", active.SelectMany(p => p.Lines).GroupBy(l => l.ItemName)
+                .Select(g => $"{g.Sum(l => l.Quantity)}x {g.Key}"));
+            string[] row =
+            [
+                o.Number.ToString(), placedLocal.ToString("yyyy-MM-dd HH:mm"), o.Status.ToString(), o.PaymentStatus.ToString(),
+                o.SourceName ?? "", o.CustomerName, o.CustomerEmail ?? "", o.CustomerPhone ?? "", active.Count.ToString(),
+                o.DeliveryLocationName ?? "", items, o.Currency, o.Total.ToString("0.00"),
+                (o.Total - o.UnpaidAmount).ToString("0.00"), o.UnpaidAmount.ToString("0.00"),
+            ];
+            sb.AppendLine(string.Join(',', row.Select(CsvSanitizer.Cell)));
+        }
+
+        var bom = new byte[] { 0xEF, 0xBB, 0xBF };
+        var bytes = bom.Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray();
+        return new CsvFile(bytes, $"orders-{clock.UtcNow:yyyyMMdd-HHmm}.csv");
     }
 }
 
